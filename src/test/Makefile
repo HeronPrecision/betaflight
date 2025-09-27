@@ -95,6 +95,13 @@ baro_ms5611_unittest_DEFINES := \
                 USE_BARO_MS5611= \
                 USE_BARO_SPI_MS5611=
 
+baro_icp20100_unittest_SRC := \
+		$(USER_DIR)/drivers/barometer/barometer_icp20100.c
+
+baro_icp20100_unittest_DEFINES := \
+                USE_BARO_ICP20100= \
+                USE_BARO_SPI_ICP20100=
+
 # This test is disabled due to build errors.
 # Its source code is archived in unit/battery_unittest.cc.txt
 #
