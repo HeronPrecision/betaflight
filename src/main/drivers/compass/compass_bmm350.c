@@ -286,7 +286,14 @@ bool bmm350Detect(magDev_t* mag)
         dev->busType_u.i2c.address = BMM350_I2C_ADDRESS;
     }
 
-    // DUMMY DETECTION - Always return true for testing
+    // Test I2C communication by trying to read any register
+    uint8_t dummy_data = 0;
+    bool ack = busReadRegisterBuffer(dev, BMM350_REG_CHIP_ID, &dummy_data, 1);
+
+    if (!ack) {
+        return false;
+    }
+
     // Set function pointers
     mag->init = bmm350Init;
     mag->read = bmm350Read;
