@@ -325,6 +325,7 @@ COMMON_SRC += \
             drivers/compass/compass_lis3mdl.c \
             drivers/compass/compass_mpu925x_ak8963.c \
             drivers/compass/compass_qmc5883l.c \
+            drivers/compass/compass_bmm350.c \
             drivers/compass/compass_virtual.c \
             drivers/max7456.c \
             drivers/vtx_rtc6705.c \
@@ -395,6 +396,7 @@ SIZE_OPTIMISED_SRC += \
             drivers/compass/compass_lis2mdl.c \
             drivers/compass/compass_lis3mdl.c \
             drivers/compass/compass_ist8310.c \
+            drivers/compass/compass_bmm350.c \
             drivers/display_ug2864hsweg01.c \
             drivers/vtx_rtc6705_soft_spi.c \
             drivers/vtx_rtc6705.c
