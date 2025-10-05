@@ -13,11 +13,15 @@
  * See the GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this software.
- *
- * If not, see <http://www.gnu.org/licenses/>.
- */
+ + * along with this software.
+ + *
+ + * If not, see <http://www.gnu.org/licenses/>.
+ + */
 
-#pragma once
+ #pragma once
 
-bool icp20100Detect(baroDev_t *baro);
+ #include "drivers/bus.h"
+
+ struct baroDev_s;
+
+ bool icp201xxDetect(struct baroDev_s *baro);
