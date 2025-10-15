@@ -116,7 +116,7 @@ static bool bmm350DelayUs(uint32_t period_us)
 static bool bmm350WaitPmuCmdReady(magDev_t *mag, uint8_t expected_cmd, uint32_t timeout_ms)
 {
     uint32_t start = millis();
-    
+
     do {
         delay(1);
         uint8_t status;
@@ -128,19 +128,19 @@ static bool bmm350WaitPmuCmdReady(magDev_t *mag, uint8_t expected_cmd, uint32_t 
             return true;
         }
     } while ((millis() - start) < timeout_ms);
-    
+
     return false;
 }
 
 static bool bmm350SetPowerMode(magDev_t *mag, uint8_t mode)
 {
     extDevice_t *dev = &mag->dev;
-    
+
     // Set power mode
     if (!busWriteRegister(dev, BMM350_REG_PMU_CMD, mode)) {
         return false;
     }
-    
+
     // Wait for mode change with appropriate delay
     uint32_t delay_time = 40;
     if (mode == BMM350_PMU_CMD_NM) {
@@ -148,7 +148,7 @@ static bool bmm350SetPowerMode(magDev_t *mag, uint8_t mode)
     } else if (mode == BMM350_PMU_CMD_SUS) {
         delay_time = BMM350_GOTO_SUSPEND_DELAY / 1000;
     }
-    
+
     return bmm350WaitPmuCmdReady(mag, mode, delay_time);
 }
 
@@ -158,38 +158,38 @@ static bool bmm350ReadOtpWord(magDev_t *mag, uint8_t addr, uint16_t *data)
     uint8_t otp_cmd, otp_status = 0;
     uint8_t lsb, msb;
     int retries = 10;
-    
+
     // Set OTP command for reading at specified address
     otp_cmd = BMM350_OTP_CMD_DIR_READ | (addr & BMM350_OTP_WORD_ADDR_MSK);
     if (!busWriteRegister(dev, BMM350_REG_OTP_CMD_REG, otp_cmd)) {
         return false;
     }
-    
+
     // Wait for OTP operation to complete
     do {
         bmm350DelayUs(300);
         if (!busReadRegisterBuffer(dev, BMM350_REG_OTP_STATUS_REG, &otp_status, 1)) {
             return false;
         }
-        
+
         // Check for errors
         if (otp_status & BMM350_OTP_STATUS_ERROR_MSK) {
             return false;
         }
-        
+
         retries--;
     } while ((!(otp_status & BMM350_OTP_STATUS_CMD_DONE)) && (retries > 0));
-    
+
     if (retries <= 0) {
         return false;
     }
-    
+
     // Read OTP data
     if (!busReadRegisterBuffer(dev, BMM350_REG_OTP_DATA_MSB_REG, &msb, 1) ||
         !busReadRegisterBuffer(dev, BMM350_REG_OTP_DATA_LSB_REG, &lsb, 1)) {
         return false;
     }
-    
+
     *data = ((uint16_t)(msb << 8) | lsb) & 0xFFFF;
     return true;
 }
@@ -210,13 +210,13 @@ static bool bmm350MagneticResetAndWait(magDev_t *mag)
     extDevice_t *dev = &mag->dev;
     uint8_t pmu_cmd;
     bool restore_normal = false;
-    
+
     // Check current power mode
     uint8_t status;
     if (!busReadRegisterBuffer(dev, BMM350_REG_PMU_CMD_STATUS_0, &status, 1)) {
         return false;
     }
-    
+
     // If in normal mode, switch to suspend first
     if ((status & 0xE0) >> 5 == BMM350_PMU_CMD_NM) {
         restore_normal = true;
@@ -224,38 +224,38 @@ static bool bmm350MagneticResetAndWait(magDev_t *mag)
             return false;
         }
     }
-    
+
     // Perform BR (Bit Reset)
     pmu_cmd = BMM350_PMU_CMD_BR;
     if (!busWriteRegister(dev, BMM350_REG_PMU_CMD, pmu_cmd)) {
         return false;
     }
     bmm350DelayUs(BMM350_BR_DELAY);
-    
+
     // Verify BR command
     if (!bmm350WaitPmuCmdReady(mag, BMM350_PMU_CMD_BR, 20)) {
         return false;
     }
-    
+
     // Perform FGR (Flux Guide Reset)
     pmu_cmd = BMM350_PMU_CMD_FGR;
     if (!busWriteRegister(dev, BMM350_REG_PMU_CMD, pmu_cmd)) {
         return false;
     }
     bmm350DelayUs(BMM350_FGR_DELAY);
-    
+
     // Verify FGR command
     if (!bmm350WaitPmuCmdReady(mag, BMM350_PMU_CMD_FGR, 25)) {
         return false;
     }
-    
+
     // Restore normal mode if it was previously enabled
     if (restore_normal) {
         if (!bmm350SetPowerMode(mag, BMM350_PMU_CMD_NM)) {
             return false;
         }
     }
-    
+
     return true;
 }
 END COMMENTED OUT FUNCTIONS */
@@ -265,7 +265,7 @@ static bool bmm350Read(magDev_t *mag, int16_t *magData)
     UNUSED(mag);
     // DUMMY READ - Return fake compass data
     magData[X] = 100;  // Fake X axis data
-    magData[Y] = 200;  // Fake Y axis data  
+    magData[Y] = 200;  // Fake Y axis data
     magData[Z] = 300;  // Fake Z axis data
     return true;
 }
@@ -287,12 +287,32 @@ bool bmm350Detect(magDev_t* mag)
     }
 
     // Test I2C communication by trying to read any register
-    uint8_t dummy_data = 0;
-    bool ack = busReadRegisterBuffer(dev, BMM350_REG_CHIP_ID, &dummy_data, 1);
+    // uint8_t dummy_data = 0;
+    // bool ack = busReadRegisterBuffer(dev, BMM350_REG_CHIP_ID, &dummy_data, 1);
 
-    if (!ack) {
-        return false;
-    }
+    // if (!ack) {
+    //     return false;
+    // }
+
+    // Set retry loop for 5
+    // int8_t attempts = 0;
+    // while (attempts < 10) {
+    //     //Request soft reset
+    //     attempts++;
+    //     busWriteRegister(dev, BMM350_REG_CMD, BMM350_CMD_SOFTRESET);
+    //     delay(240);
+
+    //     // Attempt to read the chip ID
+    //     uint8_t chip_id;
+    //     busReadRegisterBuffer(dev, BMM350_REG_CHIP_ID, &chip_id, 1);
+    //     debug[0] = chip_id;
+    //     if (chip_id == BMM350_CHIP_ID) {
+    //         break;
+    //     }
+    // }
+    // if (attempts >= 10) {
+    //     return false;
+    // }
 
     // Set function pointers
     mag->init = bmm350Init;
