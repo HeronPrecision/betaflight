@@ -37,6 +37,8 @@
 #include "barometer.h"
 #include "barometer_icp201xx.h"
 
+#include "sensors/barometer.h"
+
 #if defined(USE_BARO) && (defined(USE_BARO_ICP201XX) || defined(USE_BARO_SPI_ICP201XX))
 
 // Device constants
@@ -154,33 +156,26 @@ static uint32_t last_measure_us = 0;
 static bool icp201xx_transfer_read(const extDevice_t *dev, uint8_t reg, uint8_t *buf, uint8_t len)
 {
     if (dev->bus->busType == BUS_TYPE_SPI) {
-        // SPI: command byte (0x3C) + address byte + read data
-        uint8_t cmd = ICP201XX_SPI_READ_CMD;
-        uint8_t rxBuf[len];
+        // ICP201XX SPI protocol: command (0x3C) + register + dummy bytes for clocking data out
+        // All in one transaction - let spiReadWriteBuf handle CS automatically
 
-        // txBuf[0] = ICP201XX_SPI_READ_CMD;
-        // txBuf[1] = reg;
-        // // Fill rest with dummy data for read
-        // for (int i = 2; i < len + 2; i++) {
-        //     txBuf[i] = 0x00;
-        // }
+        uint8_t txBuf[len + 2];
+        uint8_t rxBuf[len + 2];
 
-        // Use bus segments for proper SPI transaction
-        busSegment_t segments[] = {
-            {.u.buffers = {&cmd, NULL}, sizeof(cmd), false, NULL},
-            {.u.buffers = {&reg, NULL}, sizeof(reg), false, NULL}, //what we send
-            {.u.buffers = {NULL, rxBuf}, len, true, NULL}, //what we receive
-            {.u.link = {NULL, NULL}, 0, true, NULL},
-        };
+        // Prepare TX buffer
+        txBuf[0] = ICP201XX_SPI_READ_CMD;
+        txBuf[1] = reg;
+        for (int i = 2; i < len + 2; i++) {
+            txBuf[i] = 0x00; // Dummy bytes for clocking out data
+        }
 
-        spiSequence(dev, &segments[0]);
-        spiWait(dev);
+        // Single transaction with automatic CS handling
+        spiReadWriteBuf(dev, txBuf, rxBuf, len + 2);
 
-        // Copy received data (skip command and address bytes)
-        // for (int i = 0; i < len; i++) {
-        //     buf[i] = rxBuf[i];
-        // }
-        buf[0] = rxBuf[0];
+        // Copy received data (skip command and address echo)
+        for (int i = 0; i < len; i++) {
+            buf[i] = rxBuf[i + 2];
+        }
 
         return true;
     } else {
@@ -198,21 +193,18 @@ static bool icp201xx_transfer_read(const extDevice_t *dev, uint8_t reg, uint8_t 
 static bool icp201xx_transfer_write(const extDevice_t *dev, uint8_t reg, uint8_t val)
 {
     if (dev->bus->busType == BUS_TYPE_SPI) {
-        // SPI: command byte (0x33) + address byte + data byte
+        // ICP201XX SPI protocol: command (0x33) + register + data byte
+        // All in one transaction - let spiReadWriteBuf handle CS automatically
+
         uint8_t txBuf[3];
+        uint8_t rxBuf[3]; // Not used but needed for spiReadWriteBuf
 
         txBuf[0] = ICP201XX_SPI_WRITE_CMD;
         txBuf[1] = reg;
         txBuf[2] = val;
 
-        // Use bus segments for proper SPI transaction
-        busSegment_t segments[] = {
-            {.u.buffers = {txBuf, NULL}, .len = 3, .negateCS = true},
-            {.len = 0}
-        };
-
-        spiSequence(dev, segments);
-        spiWait(dev);
+        // Single transaction with automatic CS handling
+        spiReadWriteBuf(dev, txBuf, rxBuf, 3);
 
         return true;
     } else {
@@ -652,6 +644,7 @@ bool icp201xxDetect(baroDev_t *baro)
     extDevice_t *dev = &baro->dev;
     bool defaultAddressApplied = false;
     bool ret = true;
+    delay(1000);
 
     DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_DETECT_START);
 
@@ -668,12 +661,14 @@ bool icp201xxDetect(baroDev_t *baro)
         IOInit(dev->busType_u.spi.csnPin, OWNER_BARO_CS, 0);
         IOConfigGPIO(dev->busType_u.spi.csnPin, IOCFG_OUT_PP);
         spiSetClkDivisor(dev, spiCalculateDivider(ICP201XX_MAX_SPI_CLK_HZ));
+        spiSetClkPhasePolarity(dev, false); // SPI_MODE3: CPOL=1, CPHA=1
+        delay(50); // Allow SPI configuration to settle
 #endif
     } else {
         return false; // Unsupported bus type
     }
 
-    delay(20); // Initial delay
+    delay(100); // Extended initial delay for sensor stability
 
     uint8_t id = 0xFF;
     uint8_t ver = 0xFF;
@@ -681,11 +676,14 @@ bool icp201xxDetect(baroDev_t *baro)
     DEBUG_SET(DEBUG_BARO, 1, ICP201XX_DEBUG_ID_READ);
 
     // Read device ID twice (as per ArduPilot implementation)
+    delay(10); // Small delay before first critical read
     icp201xx_transfer_read(dev, REG_DEVICE_ID, &id, 1);
+    delay(5);  // Small delay between reads
     icp201xx_transfer_read(dev, REG_DEVICE_ID, &id, 1);
 
     DEBUG_SET(DEBUG_BARO, 2, id); // Show actual ID read
 
+    delay(5);  // Small delay before version read
     icp201xx_transfer_read(dev, REG_VERSION, &ver, 1);
 
     DEBUG_SET(DEBUG_BARO, 3, ver); // Show actual version read
@@ -744,7 +742,7 @@ cleanup:
     if (!ret) {
         if (dev->bus->busType == BUS_TYPE_SPI) {
 #ifdef USE_BARO_SPI_ICP201XX
-            IOPreinit(dev->busType_u.spi.csnPin, IOCFG_IPU, PREINIT_PIN_STATE_HIGH);
+            ioPreinitByTag(barometerConfig()->baro_spi_csn, IOCFG_IPU, PREINIT_PIN_STATE_HIGH);
 #endif
         } else if (defaultAddressApplied) {
             dev->busType_u.i2c.address = 0;
