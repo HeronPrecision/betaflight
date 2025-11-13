@@ -318,7 +318,6 @@ COMMON_SRC += \
             drivers/barometer/barometer_ms5611.c \
             drivers/barometer/barometer_qmp6988.c \
             drivers/barometer/barometer_virtual.c \
-            drivers/barometer/barometer_icp201xx.c \
             drivers/compass/compass_ak8963.c \
             drivers/compass/compass_ak8975.c \
             drivers/compass/compass_hmc5883l.c \
@@ -397,7 +396,6 @@ SIZE_OPTIMISED_SRC += \
             drivers/compass/compass_lis2mdl.c \
             drivers/compass/compass_lis3mdl.c \
             drivers/compass/compass_ist8310.c \
-            drivers/compass/compass_bmm350.c \
             drivers/display_ug2864hsweg01.c \
             drivers/vtx_rtc6705_soft_spi.c \
             drivers/vtx_rtc6705.c
