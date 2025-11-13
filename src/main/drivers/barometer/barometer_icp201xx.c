@@ -20,6 +20,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdarg.h>
 
 #include "platform.h"
 
@@ -33,6 +35,7 @@
 #include "drivers/bus_i2c_busdev.h"
 #include "drivers/bus_spi.h"
 #include "drivers/io.h"
+#include "drivers/usb_cdc_debug.h"
 
 #include "barometer.h"
 #include "barometer_icp201xx.h"
@@ -153,7 +156,7 @@ static float temperature_c = 0.0f;
 static uint32_t last_measure_us = 0;
 
 // Core transport functions that handle bus type internally - device, reg to read, buffer to log reply to, length of buffer
-static bool icp201xx_transfer_read(const extDevice_t *dev, uint8_t reg, uint8_t *buf, uint8_t len)
+bool icp201xx_transfer_read(const extDevice_t *dev, uint8_t reg, uint8_t *buf, uint8_t len)
 {
     if (dev->bus->busType == BUS_TYPE_SPI) {
         // ICP201XX SPI protocol: command (0x3C) + register + dummy bytes for clocking data out
@@ -177,6 +180,12 @@ static bool icp201xx_transfer_read(const extDevice_t *dev, uint8_t reg, uint8_t 
             buf[i] = rxBuf[i + 2];
         }
 
+        usbCdcPrintf("  SPI READ reg=0x%02X len=%d data=", reg, len);
+        for (int i = 0; i < len; i++) {
+            usbCdcPrintf("%02X ", buf[i]);
+        }
+        usbCdcPrintf("\r\n");
+
         return true;
     } else {
         // I2C: standard register read followed by dummy read
@@ -186,12 +195,16 @@ static bool icp201xx_transfer_read(const extDevice_t *dev, uint8_t reg, uint8_t 
             uint8_t dummy;
             busReadRegisterBuffer(dev, REG_EMPTY, &dummy, 1);
         }
+        
+        usbCdcPrintf("  I2C READ reg=0x%02X len=%d ret=%d\r\n", reg, len, ret);
         return ret;
     }
 }
 
 static bool icp201xx_transfer_write(const extDevice_t *dev, uint8_t reg, uint8_t val)
 {
+    usbCdcPrintf("  SPI/I2C WRITE reg=0x%02X val=0x%02X\r\n", reg, val);
+    
     if (dev->bus->busType == BUS_TYPE_SPI) {
         // ICP201XX SPI protocol: command (0x33) + register + data byte
         // All in one transaction - let spiReadWriteBuf handle CS automatically
@@ -374,6 +387,8 @@ static bool icp201xx_flush_fifo(const extDevice_t *dev)
 
 static void icp201xx_soft_reset(const extDevice_t *dev)
 {
+    usbCdcPrintf("ICP201XX: Performing soft reset\r\n");
+    
     // Stop the measurement
     icp201xx_mode_select(dev, 0x00);
     delay(2);
@@ -384,6 +399,8 @@ static void icp201xx_soft_reset(const extDevice_t *dev)
     // Mask all interrupts
     icp201xx_transfer_write(dev, REG_FIFO_CONFIG, 0x00);
     icp201xx_transfer_write(dev, REG_INTERRUPT_MASK, 0xFF);
+    
+    usbCdcPrintf("ICP201XX: Soft reset complete\r\n");
 }
 
 static bool icp201xx_boot_sequence(const extDevice_t *dev)
@@ -394,36 +411,45 @@ static bool icp201xx_boot_sequence(const extDevice_t *dev)
     uint8_t bootup_status = 0;
     bool ret = true;
 
+    usbCdcPrintf("ICP201XX: Starting boot sequence\r\n");
+
     // Read version register
     if (!icp201xx_transfer_read(dev, REG_VERSION, &version, 1)) {
         DEBUG_SET(DEBUG_BARO, 2, 100); // Boot fail - version read
+        usbCdcPrintf("ICP201XX: FAIL - Version read failed\r\n");
         return false;
     }
 
+    usbCdcPrintf("ICP201XX: Version = 0x%02X\r\n", version);
     DEBUG_SET(DEBUG_BARO, 2, version + 50); // Show version in boot sequence
 
     if (version == 0xB2) {
         // B2 version Asic is detected. Boot up sequence is not required for B2 Asic
         DEBUG_SET(DEBUG_BARO, 2, 200); // B2 version detected
+        usbCdcPrintf("ICP201XX: B2 version detected, boot sequence not required\r\n");
         return true;
     }
 
     // Read boot up status and avoid re running boot up sequence if it is already done
     if (!icp201xx_transfer_read(dev, REG_OTP_MTP_OTP_STATUS2, &bootup_status, 1)) {
         DEBUG_SET(DEBUG_BARO, 2, 101); // Boot fail - status read
+        usbCdcPrintf("ICP201XX: FAIL - Boot status read failed\r\n");
         return false;
     }
 
+    usbCdcPrintf("ICP201XX: Boot status = 0x%02X\r\n", bootup_status);
     DEBUG_SET(DEBUG_BARO, 2, bootup_status + 60); // Show boot status
 
     if (bootup_status & 0x01) {
         // Boot up sequence is already done, not required to repeat boot up sequence
         DEBUG_SET(DEBUG_BARO, 2, 201); // Boot already done
+        usbCdcPrintf("ICP201XX: Boot already complete (status bit set)\r\n");
         return true;
     }
 
     // Bring the ASIC in power mode to activate the OTP power domain and get access to the main registers
     DEBUG_SET(DEBUG_BARO, 2, 202); // Starting A0 boot sequence
+    usbCdcPrintf("ICP201XX: Starting A0 boot sequence (version 0x%02X)\r\n", version);
     icp201xx_mode_select(dev, 0x04);
     delay(4);
 
@@ -463,14 +489,17 @@ static bool icp201xx_boot_sequence(const extDevice_t *dev)
 
     // Read the data from register
     DEBUG_SET(DEBUG_BARO, 2, 203); // Reading OTP data
+    usbCdcPrintf("ICP201XX: Reading OTP calibration data\r\n");
     ret &= icp201xx_read_otp_data(dev, 0xF8, 0x10, &offset);
     ret &= icp201xx_read_otp_data(dev, 0xF9, 0x10, &gain);
     ret &= icp201xx_read_otp_data(dev, 0xFA, 0x10, &Hfosc);
     delayMicroseconds(10);
 
+    usbCdcPrintf("ICP201XX: OTP values - offset=0x%02X, gain=0x%02X, Hfosc=0x%02X\r\n", offset, gain, Hfosc);
     DEBUG_SET(DEBUG_BARO, 3, offset); // Show OTP values
     if (!ret) {
         DEBUG_SET(DEBUG_BARO, 2, 102); // OTP read failed
+        usbCdcPrintf("ICP201XX: FAIL - OTP read failed\r\n");
         return false;
     }
 
@@ -511,6 +540,7 @@ static bool icp201xx_boot_sequence(const extDevice_t *dev)
     icp201xx_mode_select(dev, 0x00);
 
     DEBUG_SET(DEBUG_BARO, 2, ret ? 204 : 103); // Boot sequence result
+    usbCdcPrintf("ICP201XX: Boot sequence %s\r\n", ret ? "PASSED" : "FAILED");
     return ret;
 }
 
@@ -644,31 +674,49 @@ bool icp201xxDetect(baroDev_t *baro)
     extDevice_t *dev = &baro->dev;
     bool defaultAddressApplied = false;
     bool ret = true;
-    delay(1000);
+    
+    usbCdcPrintf("\r\n\r\n");
+    usbCdcPrintf("========================================\r\n");
+    usbCdcPrintf("= ICP201XX BAROMETER DRIVER DEBUG      =\r\n");
+    usbCdcPrintf("= Betaflight Version: 2025.12.0-beta   =\r\n");
+    usbCdcPrintf("========================================\r\n");
+    usbCdcPrintf("\r\n");
+    usbCdcPrintf("ICP201XX: Detection starting\r\n");
 
     DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_DETECT_START);
 
     if (dev->bus->busType == BUS_TYPE_I2C) {
+        usbCdcPrintf("ICP201XX: Using I2C interface\r\n");
         if (dev->busType_u.i2c.address == 0) {
             // Default address for ICP201XX
             dev->busType_u.i2c.address = ICP201XX_I2C_ADDR;
             defaultAddressApplied = true;
+            usbCdcPrintf("ICP201XX: I2C address set to default 0x%02X\r\n", ICP201XX_I2C_ADDR);
+        } else {
+            usbCdcPrintf("ICP201XX: I2C address 0x%02X\r\n", dev->busType_u.i2c.address);
         }
     } else if (dev->bus->busType == BUS_TYPE_SPI) {
         // SPI initialization
+        usbCdcPrintf("ICP201XX: Using SPI interface\r\n");
 #ifdef USE_BARO_SPI_ICP201XX
         IOHi(dev->busType_u.spi.csnPin); // Disable CS
         IOInit(dev->busType_u.spi.csnPin, OWNER_BARO_CS, 0);
         IOConfigGPIO(dev->busType_u.spi.csnPin, IOCFG_OUT_PP);
         spiSetClkDivisor(dev, spiCalculateDivider(ICP201XX_MAX_SPI_CLK_HZ));
         spiSetClkPhasePolarity(dev, false); // SPI_MODE3: CPOL=1, CPHA=1
+        usbCdcPrintf("ICP201XX: SPI configured - MODE3, max %d Hz\r\n", ICP201XX_MAX_SPI_CLK_HZ);
         delay(50); // Allow SPI configuration to settle
 #endif
     } else {
+        usbCdcPrintf("ICP201XX: ERROR - Unsupported bus type\r\n");
         return false; // Unsupported bus type
     }
 
     delay(100); // Extended initial delay for sensor stability
+    usbCdcPrintf("ICP201XX: Sensor stabilization delay complete\r\n");
+    usbCdcPrintf("ICP201XX: Bus type: %s\r\n", 
+                         dev->bus->busType == BUS_TYPE_SPI ? "SPI" : 
+                         dev->bus->busType == BUS_TYPE_I2C ? "I2C" : "UNKNOWN");
 
     uint8_t id = 0xFF;
     uint8_t ver = 0xFF;
@@ -676,70 +724,97 @@ bool icp201xxDetect(baroDev_t *baro)
     DEBUG_SET(DEBUG_BARO, 1, ICP201XX_DEBUG_ID_READ);
 
     // Read device ID twice (as per ArduPilot implementation)
+    usbCdcPrintf("ICP201XX: Reading device ID (attempt 1)\r\n");
     delay(10); // Small delay before first critical read
     icp201xx_transfer_read(dev, REG_DEVICE_ID, &id, 1);
+    usbCdcPrintf("ICP201XX: Device ID (attempt 1) = 0x%02X\r\n", id);
+    
     delay(5);  // Small delay between reads
+    usbCdcPrintf("ICP201XX: Reading device ID (attempt 2)\r\n");
     icp201xx_transfer_read(dev, REG_DEVICE_ID, &id, 1);
+    usbCdcPrintf("ICP201XX: Device ID: 0x%02X (expected 0x%02X)\r\n", id, ICP201XX_DEVICE_ID);
 
     DEBUG_SET(DEBUG_BARO, 2, id); // Show actual ID read
 
     delay(5);  // Small delay before version read
+    usbCdcPrintf("ICP201XX: Reading version register\r\n");
     icp201xx_transfer_read(dev, REG_VERSION, &ver, 1);
+    usbCdcPrintf("ICP201XX: Version: 0x%02X\r\n", ver);
 
     DEBUG_SET(DEBUG_BARO, 3, ver); // Show actual version read
 
     if (id != ICP201XX_DEVICE_ID) {
         DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_FAIL_ID);
+        usbCdcPrintf("ICP201XX: DETECTION FAILED - Wrong device ID (got 0x%02X, expected 0x%02X)\r\n", id, ICP201XX_DEVICE_ID);
         ret = false;
         goto cleanup;
     }
 
     DEBUG_SET(DEBUG_BARO, 1, ICP201XX_DEBUG_ID_VALID);
+    usbCdcPrintf("ICP201XX: Device ID verified OK\r\n");
 
     if (ver != 0x00 && ver != 0xB2) {
         DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_FAIL_VER);
+        usbCdcPrintf("ICP201XX: WARNING - Unexpected version 0x%02X (expected 0x00 or 0xB2)\r\n", ver);
         ret = false;
         goto cleanup;
     }
 
     DEBUG_SET(DEBUG_BARO, 1, ICP201XX_DEBUG_VERSION_READ);
+    usbCdcPrintf("ICP201XX: Version verified OK\r\n");
 
     delay(10);
 
     // Perform soft reset
+    usbCdcPrintf("ICP201XX: Initiating soft reset\r\n");
     icp201xx_soft_reset(dev);
     DEBUG_SET(DEBUG_BARO, 1, ICP201XX_DEBUG_RESET_DONE);
 
     // Run boot sequence if needed
     DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_BOOT_START);
+    usbCdcPrintf("ICP201XX: Starting boot sequence\r\n");
     if (!icp201xx_boot_sequence(dev)) {
         DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_FAIL_BOOT);
+        usbCdcPrintf("ICP201XX: DETECTION FAILED - Boot sequence failed\r\n");
         ret = false;
         goto cleanup;
     }
     DEBUG_SET(DEBUG_BARO, 1, ICP201XX_DEBUG_BOOT_DONE);
+    usbCdcPrintf("ICP201XX: Boot sequence completed successfully\r\n");
 
     // Configure the device
     DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_CONFIG_START);
+    usbCdcPrintf("ICP201XX: Configuring sensor for continuous mode\r\n");
     if (!icp201xx_configure(dev)) {
         DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_FAIL_CONFIG);
+        usbCdcPrintf("ICP201XX: DETECTION FAILED - Configuration failed\r\n");
         ret = false;
         goto cleanup;
     }
     DEBUG_SET(DEBUG_BARO, 1, ICP201XX_DEBUG_CONFIG_DONE);
+    usbCdcPrintf("ICP201XX: Sensor configured successfully\r\n");
 
     // Wait for initial readings
     DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_WAIT_START);
+    usbCdcPrintf("ICP201XX: Waiting for initial sensor readings\r\n");
     icp201xx_wait_read(dev);
     DEBUG_SET(DEBUG_BARO, 1, ICP201XX_DEBUG_WAIT_DONE);
+    usbCdcPrintf("ICP201XX: Initial readings ready\r\n");
 
     // Register the device
     busDeviceRegister(dev);
 
     DEBUG_SET(DEBUG_BARO, 0, ICP201XX_DEBUG_SUCCESS);
+    usbCdcPrintf("\r\n");
+    usbCdcPrintf("========================================\r\n");
+    usbCdcPrintf("ICP201XX: DETECTION SUCCESSFUL\r\n");
+    usbCdcPrintf("========================================\r\n");
+    usbCdcPrintf("\r\n");
 
 cleanup:
     if (!ret) {
+        usbCdcPrintf("ICP201XX: DETECTION FAILED - Cleaning up\r\n");
+        usbCdcPrintf("========================================\r\n\r\n");
         if (dev->bus->busType == BUS_TYPE_SPI) {
 #ifdef USE_BARO_SPI_ICP201XX
             ioPreinitByTag(barometerConfig()->baro_spi_csn, IOCFG_IPU, PREINIT_PIN_STATE_HIGH);
