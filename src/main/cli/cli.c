@@ -68,7 +68,7 @@ bool cliMode = false;
 #include "drivers/dma_reqmap.h"
 #include "drivers/dshot.h"
 #include "drivers/dshot_command.h"
-#include "drivers/camera_control_impl.h"
+#include "drivers/camera_control.h"
 #include "drivers/compass/compass.h"
 #include "drivers/display.h"
 #include "drivers/dma.h"
@@ -244,6 +244,7 @@ static const char * const featureNames[] = {
     _R(FEATURE_TELEMETRY, "TELEMETRY"),
     _R(FEATURE_3D, "3D"),
     _R(FEATURE_RX_PARALLEL_PWM, "RX_PARALLEL_PWM"),
+    _R(FEATURE_RX_MSP, "RX_MSP"),
     _R(FEATURE_RSSI_ADC, "RSSI_ADC"),
     _R(FEATURE_LED_STRIP, "LED_STRIP"),
     _R(FEATURE_DASHBOARD, "DISPLAY"),
@@ -961,6 +962,15 @@ static void cliRepeat(char ch, uint8_t len)
     }
 }
 #endif
+
+static char *skipSpace(char *buffer)
+{
+    while (*(buffer) == ' ') {
+        buffer++;
+    }
+
+    return buffer;
+}
 
 static void cliPrompt(void)
 {
@@ -2570,7 +2580,7 @@ static void cliFlashErase(const char *cmdName, char *cmdline)
     cliWriterFlush();
     flashfsEraseCompletely();
 
-    while (!flashfsIsReady()) {
+    while (!flashfsIsReady() && !flashfsIsEraseInProgress()) {
 #ifndef MINIMAL_CLI
         cliPrintf(".");
         if (i++ > 120) {
@@ -2603,11 +2613,12 @@ static void cliFlashVerify(const char *cmdName, char *cmdline)
 static void cliFlashWrite(const char *cmdName, char *cmdline)
 {
     const uint32_t address = atoi(cmdline);
-    const char *text = strchr(cmdline, ' ');
+    char *text = strchr(cmdline, ' ');
 
     if (!text) {
         cliShowInvalidArgumentCountError(cmdName);
     } else {
+        text = skipSpace(text + 1);
         flashfsSeekAbs(address);
         flashfsWrite((uint8_t*)text, strlen(text), true);
         flashfsFlushSync();
@@ -3559,15 +3570,6 @@ static void cliMap(const char *cmdName, char *cmdline)
 
     buf[i] = '\0';
     cliPrintLinef("map %s", buf);
-}
-
-static char *skipSpace(char *buffer)
-{
-    while (*(buffer) == ' ') {
-        buffer++;
-    }
-
-    return buffer;
 }
 
 static char *checkCommand(char *cmdline, const char *command)
@@ -5308,7 +5310,8 @@ static bool strToPin(char *ptr, ioTag_t *tag)
         return true;
     } else {
         const unsigned port = (*ptr >= 'a') ? *ptr - 'a' : *ptr - 'A';
-        if (port < 8) {
+        // Ports A through I
+        if (port < 9) {
             ptr++;
 
             char *end;
@@ -6555,7 +6558,10 @@ typedef struct {
 }
 #endif
 
-static void cliHelp(const char *cmdName, char *cmdline);
+// Prints CLI commands that match the optional search string in cmdline.
+// Searches both command names and descriptions; descriptions may be NULL for
+// some commands and are skipped safely. Prints all commands when cmdline is empty.
+STATIC_UNIT_TESTED void cliHelp(const char *cmdName, char *cmdline);
 
 // should be sorted a..z for bsearch()
 const clicmd_t cmdTable[] = {
@@ -6716,7 +6722,10 @@ const clicmd_t cmdTable[] = {
 #endif
 };
 
-static void cliHelp(const char *cmdName, char *cmdline)
+// Prints CLI commands that match the optional search string in cmdline.
+// Searches both command names and descriptions; descriptions may be NULL for
+// some commands and are skipped safely. Prints all commands when cmdline is empty.
+STATIC_UNIT_TESTED void cliHelp(const char *cmdName, char *cmdline)
 {
     bool anyMatches = false;
 
@@ -6727,7 +6736,7 @@ static void cliHelp(const char *cmdName, char *cmdline)
         } else {
             if (strcasestr(cmdTable[i].name, cmdline)
 #ifndef MINIMAL_CLI
-                || strcasestr(cmdTable[i].description, cmdline)
+                || (cmdTable[i].description && strcasestr(cmdTable[i].description, cmdline))
 #endif
                ) {
                 printEntry = true;
